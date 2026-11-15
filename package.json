@@ -1,0 +1,13 @@
+{
+  "name": "telegram-auto-forwarder-saas",
+  "version": "1.0.0",
+  "description": "Commercial Telegram Auto-Forwarder Bot with 100% In-Chat Customer Setup",
+  "main": "bot_forwarder.js",
+  "scripts": {
+    "start": "node bot_forwarder.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

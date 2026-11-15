@@ -1,0 +1,22 @@
+﻿{
+    "1336809281":  {
+                       "filterType":  "ALL",
+                       "lastPostId":  437,
+                       "isActive":  true,
+                       "destination":  "@kunal_bhai_no12",
+                       "footer":  "",
+                       "source":  "@tread_crafted",
+                       "keyword":  "",
+                       "removeLinks":  true
+                   },
+    "7166970433":  {
+                       "filterType":  "PDF_ONLY",
+                       "lastPostId":  21204,
+                       "isActive":  true,
+                       "destination":  "@ICT_SMC_PDF",
+                       "footer":  "Join our official channel: https://t.me/ICT_SMC_PDF",
+                       "source":  "@simpleforextools",
+                       "keyword":  "",
+                       "removeLinks":  true
+                   }
+}
