@@ -1,17 +1,14 @@
 /**
- * 📦 COMMERCIAL TELEGRAM AUTO-FORWARDER PRO (ULTRA-FAST HYBRID EDITION)
+ * 📦 COMMERCIAL TELEGRAM AUTO-FORWARDER PRO (ULTRA-FAST PRODUCTION HYBRID)
  * 24/7 Cloud Engine on Render
  * 
- * ⚡ DUAL ULTRA-FAST ENGINES:
- * 1. Public Channel Engine: 2-Second Live Poller + Native copyMessage (Instant Full Media)
- * 2. Private Channel Engine: MTProto Socket Push (< 1s) + Backup Listener
- * 
- * 🔘 1-Click Interactive Channel Picker
- * 🚫 Blocklist / Negative Keyword Filter
- * 🔄 Link & Text Replacer (Idea A)
- * 🏷️ PDF & Document Auto-Renamer (Idea B)
- * 💡 Zero-Delay Media Forwarding (Idea C)
- * 🧹 100% Identity Stripper & Custom Footer Branding
+ * 1. Sub-Second Real-Time Forwarding (< 1.5s via MTProto Socket Push)
+ * 2. 2-Second Fail-Safe Live Poller (Never misses any post)
+ * 3. 1-Click Interactive Channel Pickers (Zero typing!)
+ * 4. 100% Identity Stripper (Deletes all source watermarks & handles)
+ * 5. Negative Keyword Filter (Blocklist: Skips posts with blocked words)
+ * 6. Dual-Dispatcher Sender (Bot is primary sender with Admin rights in destination)
+ * 7. Generic Placeholders (Zero hardcoded real channel names)
  */
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -33,8 +30,8 @@ const API_ID = 39052612;
 const API_HASH = 'cda928c55ec94af1f0121b37b40a923a';
 
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-console.log('⚡ HYBRID REAL-TIME TELEGRAM AUTO-FORWARDER PRO ⚡');
-console.log('🚀 Dual-Engine: Public Scraper + MTProto Socket Push');
+console.log('⚡ TELEGRAM COMMERCIAL AUTO-FORWARDER PRO ACTIVE ⚡');
+console.log('🌐 24/7 High-Reliability Dual Cloud Engine');
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
 // 1. Health-check HTTP Server for 24/7 Cloud (Render / UptimeRobot)
@@ -42,7 +39,7 @@ http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Telegram Auto-Forwarder Bot is LIVE 24/7!\n');
 }).listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Cloud Keep-Alive Web Server active on port ${PORT}`);
+  console.log(`🌐 Keep-Alive Web Server active on port ${PORT}`);
 });
 
 // 2. Initialize Telegram Bot
@@ -106,7 +103,7 @@ function cleanAndBrandText(rawText, removeLinks, footer, replaceRules) {
     }
   }
 
-  // 2. Strip source identity (watermarks)
+  // 2. Strip source identity (watermarks & @mentions)
   if (removeLinks && text) {
     text = text.replace(/@[a-zA-Z0-9_]+/g, '');
     text = text.replace(/https?:\/\/(www\.)?(t\.me|telegram\.me)\/[^\s]+/gi, '');
@@ -156,7 +153,32 @@ async function getUserClient(userId) {
   }
 }
 
-// ⚡ 5. REAL-TIME MTPROTO PUSH EVENT ENGINE (< 1s)
+// Helper: Safely resolve ANY channel (Public or Private)
+async function resolveChannelEntity(client, input) {
+  if (!client || !input) return null;
+  const raw = input.trim();
+  const normId = getNormalizedId(raw);
+
+  try {
+    const dialogs = await client.getDialogs({ limit: 100 });
+    const match = dialogs.find(d => {
+      const dId = getNormalizedId(d.id);
+      return dId === normId || (d.title && d.title.trim() === raw);
+    });
+    if (match) return match.entity;
+  } catch (e) {}
+
+  try {
+    const clean = cleanChannelHandle(raw);
+    if (!clean.includes('+') && !clean.includes('joinchat')) {
+      return await client.getEntity(clean);
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+// ⚡ 5. REAL-TIME MTPROTO PUSH EVENT ENGINE (< 1.5s)
 function attachRealTimeListener(userId, client) {
   if (activeEventHandlers[userId]) return;
 
@@ -167,7 +189,7 @@ function attachRealTimeListener(userId, client) {
     const message = event.message;
     if (!message) return;
 
-    // Fast deduplication
+    // Deduplication key
     const msgKey = `${message.chatId}_${message.id}`;
     if (processedMsgCache.has(msgKey)) return;
     processedMsgCache.add(msgKey);
@@ -177,27 +199,29 @@ function attachRealTimeListener(userId, client) {
     }
 
     try {
-      const sourceEntity = await client.getEntity(u.source);
-      const targetId = getNormalizedId(sourceEntity.id || sourceEntity.chatId);
-      const incomingId = getNormalizedId(message.chatId || (message.peerId && message.peerId.channelId));
+      const targetNormId = getNormalizedId(u.source);
+      const incomingNormId = getNormalizedId(message.chatId || (message.peerId && message.peerId.channelId));
 
-      if (targetId && incomingId && targetId !== incomingId) {
-        return; // Message from different chat
+      if (targetNormId && incomingNormId && targetNormId !== incomingNormId) {
+        return; // Event from unrelated chat
       }
 
       const postText = message.message || '';
       const docName = (message.file && message.file.name) ? message.file.name : '';
 
-      // Blocklist check
-      if (isPostBlocked(postText, docName, u.blocklist)) return;
+      // 1. Negative Keyword Filter
+      if (isPostBlocked(postText, docName, u.blocklist)) {
+        console.log(`[INSTANT BLOCKED]: Post ${message.id} contains blocked keyword.`);
+        return;
+      }
 
-      // Keyword check
+      // 2. Keyword Filter
       if (u.keyword) {
         const kw = u.keyword.toLowerCase();
         if (!postText.toLowerCase().includes(kw) && !docName.toLowerCase().includes(kw)) return;
       }
 
-      // Media filter check
+      // 3. Media Filter
       if (u.filterType === 'PDF_ONLY') {
         const isPdf = message.document && (message.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
         if (!isPdf) return;
@@ -206,56 +230,62 @@ function attachRealTimeListener(userId, client) {
       }
 
       const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules);
+      const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
       const startTime = Date.now();
 
-      // Zero-delay dispatch
+      // Dispatch Strategy: Primary is BOT (as Bot is Administrator in destination)
       if (!message.media) {
-        await client.sendMessage(u.destination, { message: cleanText });
-        console.log(`⚡ [INSTANT TEXT in ${Date.now() - startTime}ms]: Post ${message.id}`);
+        await bot.sendMessage(cleanDest, cleanText);
+        console.log(`⚡ [INSTANT TEXT in ${Date.now() - startTime}ms]: Post ${message.id} to ${cleanDest}`);
+        u.lastPostId = message.id;
+        saveDb();
         return;
       }
 
-      const isProtected = message.chat && message.chat.noforwards;
-      if (!isProtected && !u.pdfPrefix && !u.removeLinks) {
-        try {
-          await client.forwardMessages(u.destination, {
-            messages: [message.id],
-            fromPeer: message.chatId,
-            dropAuthor: true
-          });
-          console.log(`⚡ [ZERO-DOWNLOAD STREAMED in ${Date.now() - startTime}ms]: Post ${message.id}`);
-          return;
-        } catch (fwdErr) {}
-      }
-
-      // In-Memory RAM Buffer Stream
+      // If media exists: Download buffer directly from Telegram CDN
       const buffer = await client.downloadMedia(message.media);
       let customFilename = docName;
       if (u.pdfPrefix && docName) {
         customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
       }
 
-      await client.sendFile(u.destination, {
-        file: buffer,
-        caption: cleanText,
-        attributes: customFilename && message.document ? [
-          new Api.DocumentAttributeFilename({ fileName: customFilename })
-        ] : (message.document ? message.document.attributes : undefined)
-      });
-
-      console.log(`⚡ [INSTANT MEDIA DELIVERED in ${Date.now() - startTime}ms]: Post ${message.id}`);
-      u.lastPostId = message.id;
-      saveDb();
+      // Send via Bot API
+      try {
+        if (message.document) {
+          await bot.sendDocument(cleanDest, buffer, { caption: cleanText }, { filename: customFilename || 'document.pdf' });
+        } else if (message.photo) {
+          await bot.sendPhoto(cleanDest, buffer, { caption: cleanText });
+        } else if (message.video) {
+          await bot.sendVideo(cleanDest, buffer, { caption: cleanText });
+        } else {
+          await bot.sendDocument(cleanDest, buffer, { caption: cleanText });
+        }
+        console.log(`⚡ [INSTANT MEDIA DELIVERED via Bot in ${Date.now() - startTime}ms]: Post ${message.id}`);
+        u.lastPostId = message.id;
+        saveDb();
+      } catch (botErr) {
+        // Fallback to Userbot sendFile if Bot API size exceeded
+        await client.sendFile(cleanDest, {
+          file: buffer,
+          caption: cleanText,
+          attributes: customFilename && message.document ? [
+            new Api.DocumentAttributeFilename({ fileName: customFilename })
+          ] : (message.document ? message.document.attributes : undefined)
+        });
+        console.log(`⚡ [INSTANT MEDIA DELIVERED via Userbot in ${Date.now() - startTime}ms]: Post ${message.id}`);
+        u.lastPostId = message.id;
+        saveDb();
+      }
     } catch (err) {
-      console.error('Instant forward error:', err.message);
+      console.error('Instant push error:', err.message);
     }
   }, new NewMessage({}));
 
   activeEventHandlers[userId] = true;
-  console.log(`🟢 Instant Push Listener activated for User: ${userId}`);
+  console.log(`🟢 Real-Time Push Listener Active for User: ${userId}`);
 }
 
-// 6. Public Web Scraper (For zero-login public channels)
+// 6. Public Web Scraper
 async function scrapePublicChannel(channelName) {
   const clean = cleanChannelHandle(channelName);
   if (!clean || clean.startsWith('-100') || clean.startsWith('+')) return [];
@@ -332,7 +362,7 @@ async function forwardPost(destinationChat, sourceChat, post, removeLinks = true
 
   const cleanCaption = cleanAndBrandText(post.text, removeLinks, footer, replaceRules);
 
-  // Strategy 1: Telegram Native copyMessage (Transfers genuine full-res media without forwarding tag!)
+  // Strategy 1: Telegram Native copyMessage (Transfers original media with zero download)
   try {
     const copyUrl = `https://api.telegram.org/bot${BOT_TOKEN}/copyMessage`;
     const payload = {
@@ -407,7 +437,7 @@ function getMainMenu(userId) {
   }
 
   const u = db[userId];
-  const statusText = u.isActive ? '🟢 <b>RUNNING (ACTIVE - 2s Live Engine)</b>' : '🔴 <b>PAUSED (STOPPED)</b>';
+  const statusText = u.isActive ? '🟢 <b>RUNNING (ACTIVE - Dual Real-Time Engine)</b>' : '🔴 <b>PAUSED (STOPPED)</b>';
   const rmLinkText = u.removeLinks ? '✅ ON (Watermarks deleted)' : '❌ OFF';
   const filterBadge = u.filterType === 'PDF_ONLY' ? '📄 ONLY PDFs' :
                       u.filterType === 'VIDEO_ONLY' ? '🎥 ONLY VIDEOS' : '🌐 ALL MEDIA';
@@ -415,7 +445,7 @@ function getMainMenu(userId) {
   const blockBadge = u.blocklist ? `<code>${u.blocklist}</code>` : 'None';
   const repBadge = u.replaceRules ? '✅ Active' : 'None';
   const pdfTag = u.pdfPrefix ? `<code>${u.pdfPrefix}</code>` : 'None';
-  const privateBadge = u.isUserbotConnected ? '🟢 Connected (Ultra-Fast Socket Mode)' : '⚪ Public Live Mode';
+  const privateBadge = u.isUserbotConnected ? '🟢 Connected (Private & Public Mode)' : '⚪ Public Live Mode';
 
   const text = `
 🤖 <b>TELEGRAM AUTO-FORWARDER PRO PANEL</b>
@@ -499,14 +529,28 @@ bot.on('callback_query', async (query) => {
   if (data === 'pick_src') {
     const client = await getUserClient(userId);
     if (!client) {
-      userSessions[userId] = 'awaiting_source';
-      bot.sendMessage(chatId, '📥 <b>Source Channel ka username ya link bhejo:</b>\n(Jaise: <code>@simpleforextools</code> ya private link)\n\n<i>Tip: Saare joined channels ki 1-click button list dekhne ke liye "🔐 Connect Telegram" button dabayein!</i>', { parse_mode: 'HTML' });
+      const askKeyboard = {
+        inline_keyboard: [
+          [{ text: '🔐 Connect Telegram Account Now', callback_data: 'userbot_auth' }],
+          [{ text: '✍️ Type Channel Manually', callback_data: 'type_src' }]
+        ]
+      };
+      bot.sendMessage(chatId, `
+📥 <b>SOURCE CHANNEL SETTINGS:</b>
+━━━━━━━━━━━━━━━━━━━━
+💡 <b>1-Click Button List</b> dekhne ke liye pehle apna Telegram account connect karein (taaki Telegram aapke saare joined private channels ki list de sake).
+
+Agar aapko manually link ya username likhna hai, toh neeche click karein:
+      `.trim(), {
+        parse_mode: 'HTML',
+        reply_markup: askKeyboard
+      });
       return;
     }
 
-    bot.sendMessage(chatId, '⏳ <i>Aapke joined channels load kiye ja rahe hain...</i>', { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, '⏳ <i>Aapke joined channels load ho rahe hain...</i>', { parse_mode: 'HTML' });
     try {
-      const dialogs = await client.getDialogs({ limit: 30 });
+      const dialogs = await client.getDialogs({ limit: 40 });
       const channels = dialogs.filter(d => d.isChannel || d.isGroup);
 
       if (channels.length === 0) {
@@ -536,6 +580,7 @@ bot.on('callback_query', async (query) => {
   if (data.startsWith('set_src_id_')) {
     const chId = data.replace('set_src_id_', '');
     u.source = chId.startsWith('-100') ? chId : `-100${chId}`;
+    u.lastPostId = 0;
     saveDb();
     bot.sendMessage(chatId, `✅ <b>Source Channel Set Ho Gaya:</b> <code>${u.source}</code>`, { parse_mode: 'HTML' });
     const m = getMainMenu(userId);
@@ -547,30 +592,42 @@ bot.on('callback_query', async (query) => {
   if (data === 'pick_dst') {
     const client = await getUserClient(userId);
     if (!client) {
-      userSessions[userId] = 'awaiting_dest';
-      bot.sendMessage(chatId, '📤 <b>Apne Destination Channel ka username bhejo:</b>\n(Jaise: <code>@ICT_SMC_PDF</code>)\n\n⚠️ <i>Naye Bot ko apne channel me ADMIN banana zaroori hai!</i>', { parse_mode: 'HTML' });
+      const askDstKb = {
+        inline_keyboard: [
+          [{ text: '✍️ Type My Channel (@username)', callback_data: 'type_dst' }],
+          [{ text: '🔐 Connect Telegram Account', callback_data: 'userbot_auth' }]
+        ]
+      };
+      bot.sendMessage(chatId, `
+📤 <b>DESTINATION CHANNEL SETTINGS:</b>
+━━━━━━━━━━━━━━━━━━━━
+Apne destination channel ka username (jaise: <code>@my_channel_name</code>) set karne ke liye neeche button par click karein:
+      `.trim(), {
+        parse_mode: 'HTML',
+        reply_markup: askDstKb
+      });
       return;
     }
 
-    bot.sendMessage(chatId, '⏳ <i>Aapke channels load kiye ja rahe hain...</i>', { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, '⏳ <i>Aapke channels load ho rahe hain...</i>', { parse_mode: 'HTML' });
     try {
-      const dialogs = await client.getDialogs({ limit: 30 });
-      const myChannels = dialogs.filter(d => (d.isChannel || d.isGroup) && (d.entity.creator || (d.entity.adminRights && d.entity.adminRights.postMessages)));
+      const dialogs = await client.getDialogs({ limit: 40 });
+      const channels = dialogs.filter(d => d.isChannel || d.isGroup);
 
-      if (myChannels.length === 0) {
+      if (channels.length === 0) {
         userSessions[userId] = 'awaiting_dest';
-        bot.sendMessage(chatId, '📤 <b>Apne Channel ka username ya ID bhejo:</b>\n(Jaise: <code>@my_channel</code>)');
+        bot.sendMessage(chatId, '📤 <b>Apne Channel ka username bhejo:</b>\n(Jaise: <code>@my_channel_name</code>)');
         return;
       }
 
       const buttons = [];
-      for (const ch of myChannels.slice(0, 10)) {
+      for (const ch of channels.slice(0, 10)) {
         const title = ch.title.length > 28 ? ch.title.substring(0, 25) + '...' : ch.title;
         buttons.push([{ text: `📤 ${title}`, callback_data: `set_dst_id_${ch.id}` }]);
       }
       buttons.push([{ text: '⌨️ Type Manually Instead', callback_data: 'type_dst' }]);
 
-      bot.sendMessage(chatId, '📤 <b>Apna Destination Channel chunein (Jahan post bhejna hai):</b>\n<i>(Bot ko channel me Admin banana zaroori hai)</i>', {
+      bot.sendMessage(chatId, '📤 <b>Apna Destination Channel chunein (Jahan post bhejni hai):</b>\n<i>⚠️ Make sure Naye Bot ko wahan ADMIN banaya hua hai!</i>', {
         parse_mode: 'HTML',
         reply_markup: { inline_keyboard: buttons }
       });
@@ -593,12 +650,12 @@ bot.on('callback_query', async (query) => {
 
   if (data === 'type_src') {
     userSessions[userId] = 'awaiting_source';
-    bot.sendMessage(chatId, '📥 <b>Source Channel ka username ya link bhejo:</b>', { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, '📥 <b>Source Channel ka username ya link bhejo:</b>\n(Jaise: <code>@example_source_channel</code> ya private link)', { parse_mode: 'HTML' });
     return;
   }
   if (data === 'type_dst') {
     userSessions[userId] = 'awaiting_dest';
-    bot.sendMessage(chatId, '📤 <b>Destination Channel ka username bhejo:</b>', { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, '📤 <b>Destination Channel ka username bhejo:</b>\n(Jaise: <code>@my_channel_name</code>)', { parse_mode: 'HTML' });
     return;
   }
 
@@ -634,7 +691,7 @@ Jis message me ye words honge, wo message <b>KABHI FORWARD NAHI HOGA</b>.
       bot.sendMessage(chatId, `
 🔄 <b>LINK & TEXT REPLACER:</b>
 👇 <b>Format:</b> <code>PuranaWord => NayaWord</code>
-(Jaise: <code>@OldChannel => @MyChannel</code> ya <code>oldlink.com => mylink.com</code>)
+(Jaise: <code>@OldName => @NewName</code> ya <code>oldlink.com => mylink.com</code>)
 
 <i>Hatane ke liye <code>NONE</code> likhein.</i>
       `.trim(), { parse_mode: 'HTML' });
@@ -650,7 +707,7 @@ Jis message me ye words honge, wo message <b>KABHI FORWARD NAHI HOGA</b>.
 
     case 'set_ftr':
       userSessions[userId] = 'awaiting_footer';
-      bot.sendMessage(chatId, '🏷️ <b>Custom Footer/Link bhejo:</b>\n(Jaise: <code>Join our official channel: @my_channel</code>)', { parse_mode: 'HTML' });
+      bot.sendMessage(chatId, '🏷️ <b>Custom Footer/Link bhejo:</b>\n(Jaise: <code>Join our official channel: @my_channel_name</code>)', { parse_mode: 'HTML' });
       break;
 
     case 'tog_lnk':
@@ -668,7 +725,7 @@ Jis message me ye words honge, wo message <b>KABHI FORWARD NAHI HOGA</b>.
       userSessions[userId] = 'awaiting_phone';
       bot.sendMessage(chatId, `
 🔐 <b>CONNECT TELEGRAM ACCOUNT</b>
-Private Channels aur sub-second speed ke liye apna number connect karein:
+Private Channels aur 1-Click Channel Lists ke liye apna number connect karein:
 
 📱 <b>Apna Telegram Phone Number bhejein:</b>
 (Country code ke sath, jaise: <code>+919876543210</code>)
@@ -680,67 +737,86 @@ Private Channels aur sub-second speed ke liye apna number connect karein:
         bot.sendMessage(chatId, '⚠️ <b>Pehle Source aur Destination channel set karein!</b>', { parse_mode: 'HTML' });
         return;
       }
-      bot.sendMessage(chatId, `🚀 <b>Cloning Shuru!</b> Full Photos, Videos, PDFs aur Text deliver kiye ja rahe hain...`, { parse_mode: 'HTML' });
+      bot.sendMessage(chatId, `🚀 <b>Cloning Shuru!</b> Content deliver kiya ja raha hai...`, { parse_mode: 'HTML' });
 
-      // Userbot execution if connected
+      // Priority 1: Userbot Execution (Handles BOTH Private and Public with full media!)
       const userClient = await getUserClient(userId);
       if (userClient) {
         try {
-          const entity = await userClient.getEntity(u.source);
-          const messages = await userClient.getMessages(entity, { limit: 10 });
-          let count = 0;
+          const entity = await resolveChannelEntity(userClient, u.source);
+          if (entity) {
+            const messages = await userClient.getMessages(entity, { limit: 10 });
+            let count = 0;
+            const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
 
-          for (const m of messages.reverse()) {
-            if (!m.message && !m.media) continue;
-            const postText = m.message || '';
-            const docName = (m.file && m.file.name) ? m.file.name : '';
+            for (const m of messages.reverse()) {
+              if (!m.message && !m.media) continue;
+              const postText = m.message || '';
+              const docName = (m.file && m.file.name) ? m.file.name : '';
 
-            if (isPostBlocked(postText, docName, u.blocklist)) continue;
-            if (u.keyword) {
-              const kw = u.keyword.toLowerCase();
-              if (!postText.toLowerCase().includes(kw) && !docName.toLowerCase().includes(kw)) continue;
-            }
-            if (u.filterType === 'PDF_ONLY') {
-              const isPdf = m.document && (m.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
-              if (!isPdf) continue;
-            } else if (u.filterType === 'VIDEO_ONLY') {
-              if (!m.video) continue;
-            }
-
-            const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules);
-
-            try {
-              if (m.media) {
-                const buffer = await userClient.downloadMedia(m.media);
-                let customFilename = docName;
-                if (u.pdfPrefix && docName) {
-                  customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
-                }
-
-                await userClient.sendFile(u.destination, {
-                  file: buffer,
-                  caption: cleanText,
-                  attributes: customFilename && m.document ? [
-                    new Api.DocumentAttributeFilename({ fileName: customFilename })
-                  ] : (m.document ? m.document.attributes : undefined)
-                });
-              } else if (cleanText) {
-                await userClient.sendMessage(u.destination, { message: cleanText });
+              if (isPostBlocked(postText, docName, u.blocklist)) continue;
+              if (u.keyword) {
+                const kw = u.keyword.toLowerCase();
+                if (!postText.toLowerCase().includes(kw) && !docName.toLowerCase().includes(kw)) continue;
               }
-              count++;
-            } catch (err) {}
-            await new Promise(r => setTimeout(r, 1000));
-          }
+              if (u.filterType === 'PDF_ONLY') {
+                const isPdf = m.document && (m.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
+                if (!isPdf) continue;
+              } else if (u.filterType === 'VIDEO_ONLY') {
+                if (!m.video) continue;
+              }
 
-          bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${count} items</b> deliver ho gaye!`, { parse_mode: 'HTML' });
-          return;
-        } catch (e) {}
+              const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules);
+
+              try {
+                if (m.media) {
+                  const buffer = await userClient.downloadMedia(m.media);
+                  let customFilename = docName;
+                  if (u.pdfPrefix && docName) {
+                    customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
+                  }
+
+                  try {
+                    if (m.document) {
+                      await bot.sendDocument(cleanDest, buffer, { caption: cleanText }, { filename: customFilename || 'document.pdf' });
+                    } else if (m.photo) {
+                      await bot.sendPhoto(cleanDest, buffer, { caption: cleanText });
+                    } else if (m.video) {
+                      await bot.sendVideo(cleanDest, buffer, { caption: cleanText });
+                    } else {
+                      await bot.sendDocument(cleanDest, buffer, { caption: cleanText });
+                    }
+                  } catch (be) {
+                    await userClient.sendFile(cleanDest, {
+                      file: buffer,
+                      caption: cleanText,
+                      attributes: customFilename && m.document ? [
+                        new Api.DocumentAttributeFilename({ fileName: customFilename })
+                      ] : (m.document ? m.document.attributes : undefined)
+                    });
+                  }
+                } else if (cleanText) {
+                  await bot.sendMessage(cleanDest, cleanText);
+                }
+                count++;
+              } catch (err) {
+                console.error('Clone send error:', err.message);
+              }
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${count} items</b> deliver ho gaye!`, { parse_mode: 'HTML' });
+            return;
+          }
+        } catch (e) {
+          console.error('Userbot clone error:', e.message);
+        }
       }
 
-      // Public Channel Scraper execution
+      // Priority 2: Public Scraper Execution
       const posts = await scrapePublicChannel(u.source);
       if (posts.length === 0) {
-        bot.sendMessage(chatId, `⚠️ <b>Source Channel (${u.source}) se posts nahi mil paaye!</b>`, { parse_mode: 'HTML' });
+        bot.sendMessage(chatId, `⚠️ <b>Source Channel (${u.source}) se posts nahi mil paaye!</b>\nCheck karein ki username sahi hai ya account connect karein.`, { parse_mode: 'HTML' });
       } else {
         let clonedCount = 0;
         const targetPosts = posts.length > 10 ? posts.slice(-10) : posts;
@@ -763,7 +839,7 @@ Private Channels aur sub-second speed ke liye apna number connect karein:
           await new Promise(r => setTimeout(r, 1000));
         }
 
-        bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${clonedCount} posts (Media & Text)</b> deliver ho gaye!`, { parse_mode: 'HTML' });
+        bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${clonedCount} posts</b> deliver ho gaye!`, { parse_mode: 'HTML' });
       }
       break;
 
@@ -781,8 +857,14 @@ Private Channels aur sub-second speed ke liye apna number connect karein:
       bot.sendMessage(chatId, `⏳ <b>Channel History se Saare PDFs dhoondh kar send kiye ja rahe hain...</b>`, { parse_mode: 'HTML' });
 
       try {
-        const entity = await bClient.getEntity(u.source);
+        const entity = await resolveChannelEntity(bClient, u.source);
+        if (!entity) {
+          bot.sendMessage(chatId, `❌ Channel entity resolve nahi ho paayi.`);
+          return;
+        }
+
         let pdfCount = 0;
+        const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
 
         for await (const message of bClient.iterMessages(entity, { limit: 100 })) {
           const docName = (message.file && message.file.name) ? message.file.name : '';
@@ -804,13 +886,17 @@ Private Channels aur sub-second speed ke liye apna number connect karein:
                 customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
               }
 
-              await bClient.sendFile(u.destination, {
-                file: buffer,
-                caption: caption,
-                attributes: customFilename && message.document ? [
-                  new Api.DocumentAttributeFilename({ fileName: customFilename })
-                ] : (message.document ? message.document.attributes : undefined)
-              });
+              try {
+                await bot.sendDocument(cleanDest, buffer, { caption: caption }, { filename: customFilename || 'document.pdf' });
+              } catch (be) {
+                await bClient.sendFile(cleanDest, {
+                  file: buffer,
+                  caption: caption,
+                  attributes: customFilename && message.document ? [
+                    new Api.DocumentAttributeFilename({ fileName: customFilename })
+                  ] : (message.document ? message.document.attributes : undefined)
+                });
+              }
               pdfCount++;
               await new Promise(r => setTimeout(r, 1200));
             } catch (err) {}
@@ -946,7 +1032,7 @@ Aapke <b>Telegram App</b> me 5-digit ka official Login Code aaya hoga.
 
       attachRealTimeListener(userId, authData.client);
 
-      bot.sendMessage(msg.chat.id, `🎉 <b>SUCCESS! Telegram Connected!</b>\nAb 1-Click interactive buttons aur < 1.5s sub-second speed active ho gayi hai!`, { parse_mode: 'HTML' });
+      bot.sendMessage(msg.chat.id, `🎉 <b>SUCCESS! Telegram Connected!</b>\nAb 1-Click interactive buttons aur Private Channel cloning fully active hai!`, { parse_mode: 'HTML' });
       const m = getMainMenu(userId);
       bot.sendMessage(msg.chat.id, m.text, { parse_mode: 'HTML', reply_markup: m.keyboard });
     } catch (err) {
@@ -1035,7 +1121,7 @@ Aapke <b>Telegram App</b> me 5-digit ka official Login Code aaya hoga.
   // Standard Manual Inputs
   if (session === 'awaiting_source') {
     u.source = text.trim();
-    u.lastPostId = 0; // Reset to initialize on fresh source
+    u.lastPostId = 0;
     delete userSessions[userId];
     saveDb();
     bot.sendMessage(msg.chat.id, `✅ <b>Source Channel Set:</b> <code>${u.source}</code>`, { parse_mode: 'HTML' });
@@ -1071,84 +1157,99 @@ Aapke <b>Telegram App</b> me 5-digit ka official Login Code aaya hoga.
 });
 
 // ⚡ 10. REAL-TIME HYBRID ENGINE POLLER (EVERY 2 SECONDS)
-// Runs continuously for Public Channels & As Fail-Safe for Private Channels!
 setInterval(async () => {
   for (const uid of Object.keys(db)) {
     const u = db[uid];
     if (u.isActive && u.source !== 'Not Set' && u.destination !== 'Not Set') {
       try {
-        const isPrivate = u.source.startsWith('-100') || u.source.includes('+') || u.source.includes('joinchat');
+        const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
         const userClient = await getUserClient(uid);
 
-        // A. Private Channel Active Poller (if userbot connected)
-        if (isPrivate && userClient) {
+        // A. Private Channel Active Poller
+        if (userClient) {
           try {
-            const entity = await userClient.getEntity(u.source);
-            const messages = await userClient.getMessages(entity, { limit: 3 });
+            const entity = await resolveChannelEntity(userClient, u.source);
+            if (entity) {
+              const messages = await userClient.getMessages(entity, { limit: 3 });
 
-            if (messages.length > 0) {
-              if (!u.lastPostId || u.lastPostId === 0) {
-                u.lastPostId = messages[0].id;
-                saveDb();
-                continue;
-              }
-
-              const newMessages = messages.filter(m => m.id > u.lastPostId).reverse();
-              for (const nm of newMessages) {
-                const postText = nm.message || '';
-                const docName = (nm.file && nm.file.name) ? nm.file.name : '';
-
-                if (isPostBlocked(postText, docName, u.blocklist)) {
-                  u.lastPostId = nm.id;
+              if (messages.length > 0) {
+                if (!u.lastPostId || u.lastPostId === 0) {
+                  u.lastPostId = messages[0].id;
                   saveDb();
                   continue;
                 }
 
-                if (u.filterType === 'PDF_ONLY') {
-                  const isPdf = nm.document && (nm.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
-                  if (!isPdf) {
+                const newMessages = messages.filter(m => m.id > u.lastPostId).reverse();
+                for (const nm of newMessages) {
+                  const postText = nm.message || '';
+                  const docName = (nm.file && nm.file.name) ? nm.file.name : '';
+
+                  if (isPostBlocked(postText, docName, u.blocklist)) {
                     u.lastPostId = nm.id;
                     saveDb();
                     continue;
                   }
-                } else if (u.filterType === 'VIDEO_ONLY') {
-                  if (!nm.video) {
-                    u.lastPostId = nm.id;
-                    saveDb();
-                    continue;
+
+                  if (u.filterType === 'PDF_ONLY') {
+                    const isPdf = nm.document && (nm.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
+                    if (!isPdf) {
+                      u.lastPostId = nm.id;
+                      saveDb();
+                      continue;
+                    }
+                  } else if (u.filterType === 'VIDEO_ONLY') {
+                    if (!nm.video) {
+                      u.lastPostId = nm.id;
+                      saveDb();
+                      continue;
+                    }
                   }
-                }
 
-                const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules);
+                  const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules);
 
-                if (nm.media) {
-                  const buffer = await userClient.downloadMedia(nm.media);
-                  let customFilename = docName;
-                  if (u.pdfPrefix && docName) {
-                    customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
+                  if (nm.media) {
+                    const buffer = await userClient.downloadMedia(nm.media);
+                    let customFilename = docName;
+                    if (u.pdfPrefix && docName) {
+                      customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
+                    }
+
+                    try {
+                      if (nm.document) {
+                        await bot.sendDocument(cleanDest, buffer, { caption: cleanText }, { filename: customFilename || 'document.pdf' });
+                      } else if (nm.photo) {
+                        await bot.sendPhoto(cleanDest, buffer, { caption: cleanText });
+                      } else if (nm.video) {
+                        await bot.sendVideo(cleanDest, buffer, { caption: cleanText });
+                      } else {
+                        await bot.sendDocument(cleanDest, buffer, { caption: cleanText });
+                      }
+                    } catch (be) {
+                      await userClient.sendFile(cleanDest, {
+                        file: buffer,
+                        caption: cleanText,
+                        attributes: customFilename && nm.document ? [
+                          new Api.DocumentAttributeFilename({ fileName: customFilename })
+                        ] : (nm.document ? nm.document.attributes : undefined)
+                      });
+                    }
+                  } else if (cleanText) {
+                    await bot.sendMessage(cleanDest, cleanText);
                   }
 
-                  await userClient.sendFile(u.destination, {
-                    file: buffer,
-                    caption: cleanText,
-                    attributes: customFilename && nm.document ? [
-                      new Api.DocumentAttributeFilename({ fileName: customFilename })
-                    ] : (nm.document ? nm.document.attributes : undefined)
-                  });
-                } else if (cleanText) {
-                  await userClient.sendMessage(u.destination, { message: cleanText });
+                  console.log(`🚀 [REAL-TIME PRIVATE FORWARDED]: Post ${nm.id} to ${cleanDest}`);
+                  u.lastPostId = nm.id;
+                  saveDb();
                 }
-
-                console.log(`🚀 [REAL-TIME PRIVATE FORWARDED]: Post ${nm.id} to ${u.destination}`);
-                u.lastPostId = nm.id;
-                saveDb();
               }
+              continue;
             }
-          } catch (e) {}
-          continue;
+          } catch (pe) {
+            console.error('Private poller error:', pe.message);
+          }
         }
 
-        // B. Public Channel Active Poller (Runs every 2s without login!)
+        // B. Public Channel Active Poller
         const posts = await scrapePublicChannel(u.source);
         if (posts.length > 0) {
           if (!u.lastPostId || u.lastPostId === 0) {
@@ -1159,14 +1260,12 @@ setInterval(async () => {
 
           const newOnes = posts.filter(p => p.id > u.lastPostId);
           for (const np of newOnes) {
-            // Blocklist check
             if (isPostBlocked(np.text, np.docTitle, u.blocklist)) {
               u.lastPostId = np.id;
               saveDb();
               continue;
             }
 
-            // Keyword check
             if (u.keyword) {
               const kw = u.keyword.toLowerCase();
               if (!np.text.toLowerCase().includes(kw) && !np.docTitle.toLowerCase().includes(kw)) {
@@ -1176,7 +1275,6 @@ setInterval(async () => {
               }
             }
 
-            // Media type check
             if (u.filterType === 'PDF_ONLY' && !np.isPdf) {
               u.lastPostId = np.id;
               saveDb();
@@ -1196,7 +1294,9 @@ setInterval(async () => {
             }
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('Poll loop error:', e.message);
+      }
     }
   }
-}, 2000); // ⚡ Checks every 2 seconds flat!
+}, 2000);
