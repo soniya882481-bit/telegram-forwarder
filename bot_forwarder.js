@@ -77,10 +77,31 @@ function saveDb() {
   }
 }
 
+// 🔄 Auto-boot all active user sessions on cloud restart
+setTimeout(async () => {
+  console.log('🔄 Auto-booting active userbot sessions from database...');
+  for (const uid of Object.keys(db)) {
+    const u = db[uid];
+    if (u && u.sessionString && u.isActive) {
+      try {
+        console.log(`🔌 Initializing session for user ${uid}...`);
+        const client = await getUserClient(uid);
+        if (client) {
+          await resolveAllSources(uid, client);
+          console.log(`✅ Session active & listening live for ${uid}!`);
+        }
+      } catch (e) {
+        console.error(`Auto-boot failed for ${uid}:`, e.message);
+      }
+    }
+  }
+}, 3000);
+
 // 🛡️ ZERO-DUPLICATION ENGINE & SYNCED ACTION TRACKERS
 const sentMessagesCache = new Map(); // key: `${srcNormId}_${msgId}_${destNormId}` -> timestamp
 const messageMapping = {}; // key: `${srcNormId}_${srcMsgId}` -> { destChatId, destMsgId }
 const isProcessingPoller = {}; // Concurrency lock per user to prevent overlapping polling ticks
+const channelIdCache = new Map(); // Fast ID cache for link/name -> numeric channel ID
 const userSessions = {};
 const userAuthStore = {};
 const activeUserClients = {};
@@ -176,7 +197,8 @@ function cleanAndBrandText(rawText, removeLinks, footer, replaceRules, blocklist
     text = text.replace(/@[a-zA-Z0-9_]+/g, '');
     text = text.replace(/https?:\/\/(www\.)?(t\.me|telegram\.me)\/[^\s]+/gi, '');
     text = text.replace(/t\.me\/[^\s]+/gi, '');
-    text = text.replace(/https?:\/\/[^\s]+/gi, '');
+    text = text.replace(/(?:https?:\/\/|www\.)[^\s]+/gi, '');
+    text = text.replace(/\b[a-zA-Z0-9-]+\.(?:live|bet|xyz|site|vip|club|link|online|games|buzz|cc|app|pro)\b[^\s]*/gi, '');
     text = text.replace(/\n{3,}/g, '\n\n').trim();
   }
 
@@ -228,7 +250,12 @@ async function resolveChannelEntity(client, input) {
       const dId = getNormalizedId(d.id);
       return (normId && dId === normId) || (d.title && d.title.trim().toLowerCase() === raw.toLowerCase());
     });
-    if (match) return match.entity;
+    if (match && match.entity) {
+      if (match.entity.id) {
+        channelIdCache.set(raw, getNormalizedId(match.entity.id));
+      }
+      return match.entity;
+    }
   } catch (e) {}
 
   if (raw.includes('+') || raw.includes('joinchat/')) {
@@ -236,11 +263,17 @@ async function resolveChannelEntity(client, input) {
     if (hash) {
       try {
         const check = await client.invoke(new Api.messages.CheckChatInvite({ hash }));
-        if (check && check.chat) return check.chat;
+        if (check && check.chat) {
+          channelIdCache.set(raw, getNormalizedId(check.chat.id));
+          return check.chat;
+        }
       } catch (ie) {}
       try {
         const imp = await client.invoke(new Api.messages.ImportChatInvite({ hash }));
-        if (imp && imp.chats && imp.chats.length > 0) return imp.chats[0];
+        if (imp && imp.chats && imp.chats.length > 0) {
+          channelIdCache.set(raw, getNormalizedId(imp.chats[0].id));
+          return imp.chats[0];
+        }
       } catch (je) {}
     }
   }
@@ -248,16 +281,73 @@ async function resolveChannelEntity(client, input) {
   try {
     const clean = cleanChannelHandle(raw);
     if (!clean.includes('+') && !clean.includes('joinchat')) {
-      return await client.getEntity(clean);
+      const ent = await client.getEntity(clean);
+      if (ent && ent.id) {
+        channelIdCache.set(raw, getNormalizedId(ent.id));
+      }
+      return ent;
     }
   } catch (e) {}
 
   return null;
 }
 
+// Pre-resolve all channel IDs so socket listeners match immediately (< 0.8s)
+async function resolveAllSources(userId, client) {
+  const u = db[userId];
+  if (!u || !client) return;
+
+  if (u.source && u.source !== 'Not Set') {
+    try {
+      const ent = await resolveChannelEntity(client, u.source);
+      if (ent && ent.id) {
+        u.sourceId = getNormalizedId(ent.id);
+        u.sourceTitle = ent.title || '';
+        channelIdCache.set(u.source, u.sourceId);
+      }
+    } catch (e) {}
+  }
+  if (u.destination && u.destination !== 'Not Set') {
+    try {
+      const ent = await resolveChannelEntity(client, u.destination);
+      if (ent && ent.id) {
+        u.destinationId = `-100${getNormalizedId(ent.id)}`;
+        channelIdCache.set(u.destination, getNormalizedId(ent.id));
+      }
+    } catch (e) {}
+  }
+  if (u.routes) {
+    for (const r of u.routes) {
+      if (r.source && r.source !== 'Not Set') {
+        try {
+          const ent = await resolveChannelEntity(client, r.source);
+          if (ent && ent.id) {
+            r.sourceId = getNormalizedId(ent.id);
+            r.sourceTitle = ent.title || '';
+            channelIdCache.set(r.source, r.sourceId);
+          }
+        } catch (e) {}
+      }
+      if (r.destination && r.destination !== 'Not Set') {
+        try {
+          const ent = await resolveChannelEntity(client, r.destination);
+          if (ent && ent.id) {
+            r.destinationId = `-100${getNormalizedId(ent.id)}`;
+            channelIdCache.set(r.destination, getNormalizedId(ent.id));
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  saveDb();
+}
+
 // ⚡ 5. REAL-TIME MTPROTO PUSH EVENT ENGINE (< 0.8s) + SYNCED ACTIONS
 function attachRealTimeListener(userId, client) {
   if (activeEventHandlers[userId]) return;
+
+  // Resolve channel IDs in background so cache is hot
+  resolveAllSources(userId, client).catch(() => {});
 
   // A. New Incoming Message Event
   client.addEventHandler(async (event) => {
@@ -267,7 +357,17 @@ function attachRealTimeListener(userId, client) {
     const message = event.message;
     if (!message) return;
 
-    const incomingNormId = getNormalizedId(message.chatId || (message.peerId && message.peerId.channelId));
+    // Extract all possible IDs of the incoming channel/message
+    let rawIncomingId = '';
+    if (message.peerId) {
+      if (message.peerId.channelId) rawIncomingId = message.peerId.channelId.toString();
+      else if (message.peerId.chatId) rawIncomingId = message.peerId.chatId.toString();
+      else if (message.peerId.userId) rawIncomingId = message.peerId.userId.toString();
+    }
+    if (!rawIncomingId && message.chatId) {
+      rawIncomingId = message.chatId.toString();
+    }
+    const incomingNormId = getNormalizedId(rawIncomingId);
     if (!incomingNormId) return;
 
     // Find all matching forward rules
@@ -275,7 +375,9 @@ function attachRealTimeListener(userId, client) {
       id: 'default_1',
       name: 'Primary Pipeline',
       source: u.source,
+      sourceId: u.sourceId,
       destination: u.destination,
+      destinationId: u.destinationId,
       filterType: u.filterType,
       keyword: u.keyword,
       blocklist: u.blocklist,
@@ -283,13 +385,15 @@ function attachRealTimeListener(userId, client) {
       removeLinks: u.removeLinks,
       header: u.header || '',
       footer: u.footer || '',
+      cloneMode: u.cloneMode || 'FILTERED',
       isActive: u.isActive
     }];
 
     const matchedRoutes = routes.filter(r => {
       if (!r.isActive || r.source === 'Not Set' || r.destination === 'Not Set') return false;
       const rSrcNorm = getNormalizedId(r.source);
-      return rSrcNorm && rSrcNorm === incomingNormId;
+      const rSrcCached = r.sourceId || u.sourceId || channelIdCache.get(r.source);
+      return (rSrcNorm && rSrcNorm === incomingNormId) || (rSrcCached && rSrcCached === incomingNormId);
     });
 
     if (matchedRoutes.length === 0) return;
@@ -311,11 +415,20 @@ function attachRealTimeListener(userId, client) {
         if (!message.video) continue;
       }
 
-      // Clean & Brand Text
-      const cleanText = cleanAndBrandText(postText, r.removeLinks, r.footer, r.replaceRules, r.blocklist, r.header, r.keyword);
-      if (!cleanText && !message.media) continue; // If 100% spam and no media, skip
+      // Check Mode: ⚡ Direct Copy (Mirror) vs 🛡️ Filtered (Strip Ads)
+      const isDirectCopy = (r.cloneMode === 'DIRECT' || u.cloneMode === 'DIRECT');
+      let cleanText = postText;
+      if (!isDirectCopy) {
+        cleanText = cleanAndBrandText(postText, r.removeLinks, r.footer, r.replaceRules, r.blocklist, r.header, r.keyword);
+        if (!cleanText && !message.media) continue; // If 100% spam and no media, skip
+      } else {
+        // In Direct Copy, if brand replacer is set, replace brand
+        if (r.replaceRules && cleanText) {
+          cleanText = cleanAndBrandText(postText, false, '', r.replaceRules, '', '', '');
+        }
+      }
 
-      const cleanDest = r.destination.startsWith('@') ? r.destination : (r.destination.startsWith('-100') ? r.destination : `@${r.destination}`);
+      const cleanDest = r.destinationId || u.destinationId || (r.destination.startsWith('@') ? r.destination : (r.destination.startsWith('-100') ? r.destination : `@${r.destination}`));
       const startTime = Date.now();
 
       // Check if this post is a reply to an existing post (Reply Sync)
@@ -342,12 +455,16 @@ function attachRealTimeListener(userId, client) {
             customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
           }
 
-          if (message.document) {
-            sentMsg = await bot.sendDocument(cleanDest, buffer, { caption: cleanText, ...sendOptions }, { filename: customFilename || 'document.pdf' });
+          if (message.voice) {
+            sentMsg = await bot.sendVoice(cleanDest, buffer, { caption: cleanText, ...sendOptions });
+          } else if (message.audio) {
+            sentMsg = await bot.sendAudio(cleanDest, buffer, { caption: cleanText, ...sendOptions });
           } else if (message.photo) {
             sentMsg = await bot.sendPhoto(cleanDest, buffer, { caption: cleanText, ...sendOptions });
           } else if (message.video) {
             sentMsg = await bot.sendVideo(cleanDest, buffer, { caption: cleanText, ...sendOptions });
+          } else if (message.document) {
+            sentMsg = await bot.sendDocument(cleanDest, buffer, { caption: cleanText, ...sendOptions }, { filename: customFilename || 'document.pdf' });
           } else {
             sentMsg = await bot.sendDocument(cleanDest, buffer, { caption: cleanText, ...sendOptions });
           }
@@ -531,6 +648,9 @@ function getMainMenu(userId) {
   const privateBadge = u.isUserbotConnected ? '🟢 Connected (Private & Public Mode)' : '⚪ Public Live Mode';
   const rulesCount = u.routes.length;
 
+  u.cloneMode = u.cloneMode || 'FILTERED';
+  const modeBadge = u.cloneMode === 'DIRECT' ? '⚡ <b>DIRECT COPY (100% As-Is Mirror)</b>' : '🛡️ <b>FILTERED (Strip Betting Ads)</b>';
+
   const text = `
 ⚡ <b>TELEGRAM COMMERCIAL AUTO-FORWARDER PRO</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -539,6 +659,7 @@ function getMainMenu(userId) {
 🤖 <b>Forward Bots:</b> <b>Multi-Bot Pool Active (10 Bots Load Balanced)</b>
 💬 <b>Messages:</b> <b>Unlimited Real-Time Flow</b>
 🛡️ <b>Anti-Duplication:</b> ✅ <b>100% Zero Duplicates Active</b>
+🔄 <b>Operation Mode:</b> ${modeBadge}
 
 <b>[Active Channel Routing]</b>
 📥 <b>Source:</b> <code>${u.source}</code>
@@ -570,6 +691,10 @@ function getMainMenu(userId) {
         { text: '📤 2. Set Destination', callback_data: 'pick_dst' }
       ],
       [
+        { text: u.cloneMode === 'DIRECT' ? '⚡ Mode: DIRECT COPY (Mirror)' : '🛡️ Mode: FILTERED (Strip Ads)', callback_data: 'tog_clone_mode' },
+        { text: '📦 CLONE CHANNEL (10/30/50)', callback_data: 'clone_menu' }
+      ],
+      [
         { text: `🚫 Blacklist (Ad Filter)`, callback_data: 'set_blk' },
         { text: `✅ Whitelist`, callback_data: 'set_kw' }
       ],
@@ -586,17 +711,134 @@ function getMainMenu(userId) {
         { text: '✏️ Edit/Delete: ON', callback_data: 'info_sync' }
       ],
       [
-        { text: '📦 CLONE LAST 10 POSTS', callback_data: 'clone_now' },
-        { text: u.isUserbotConnected ? '✅ Telegram Connected' : '🔐 Connect Telegram', callback_data: 'userbot_auth' }
+        { text: u.isUserbotConnected ? '✅ Telegram Connected' : '🔐 Connect Telegram', callback_data: 'userbot_auth' },
+        { text: u.isActive ? '⏸️ PAUSE FORWARDER' : '▶️ START FORWARDER (LIVE)', callback_data: 'tog_act' }
       ],
       [
-        { text: u.isActive ? '⏸️ PAUSE FORWARDER' : '▶️ START FORWARDER (LIVE)', callback_data: 'tog_act' },
         { text: '🔄 Refresh Panel', callback_data: 'refresh' }
       ]
     ]
   };
 
   return { text, keyboard };
+}
+
+// 📦 HIGH-SPEED CHANNEL CLONER ENGINE (DIRECT MIRROR / FILTERED)
+async function executeChannelClone(userId, chatId, limit = 10) {
+  const u = db[userId];
+  if (!u || u.source === 'Not Set' || u.destination === 'Not Set') {
+    bot.sendMessage(chatId, '⚠️ <b>Pehle Source aur Destination channel set karein!</b>', { parse_mode: 'HTML' });
+    return;
+  }
+
+  const isDirect = (u.cloneMode === 'DIRECT');
+  const modeBadge = isDirect ? '⚡ DIRECT COPY (Mirror)' : '🛡️ FILTERED (Strip Ads)';
+  bot.sendMessage(chatId, `🚀 <b>Cloning Shuru! Pichli ${limit} posts deliver ki ja rahi hain...</b>\n<i>Mode: ${modeBadge}</i>`, { parse_mode: 'HTML' });
+
+  const cleanDest = u.destinationId || (u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`));
+  const userClient = await getUserClient(userId);
+
+  if (userClient) {
+    try {
+      const entity = await resolveChannelEntity(userClient, u.source);
+      if (entity) {
+        const messages = await userClient.getMessages(entity, { limit });
+        let count = 0;
+
+        for (const m of messages.reverse()) {
+          if (!m.message && !m.media) continue;
+
+          // 🛡️ Deduplication check
+          if (isAlreadySent(u.source, m.id, cleanDest)) continue;
+
+          const postText = m.message || '';
+          const docName = (m.file && m.file.name) ? m.file.name : '';
+
+          if (u.filterType === 'PDF_ONLY') {
+            const isPdf = m.document && (m.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
+            if (!isPdf) continue;
+          } else if (u.filterType === 'VIDEO_ONLY') {
+            if (!m.video) continue;
+          }
+
+          let cleanText = postText;
+          if (!isDirect) {
+            cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
+            if (!cleanText && !m.media) continue;
+          } else {
+            // Direct copy mode: keep original content, replace brand if rule exists
+            if (u.replaceRules && cleanText) {
+              cleanText = cleanAndBrandText(postText, false, '', u.replaceRules, '', '', '');
+            }
+          }
+
+          try {
+            if (m.media) {
+              const buffer = await userClient.downloadMedia(m.media);
+              let customFilename = docName;
+              if (u.pdfPrefix && docName) {
+                customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
+              }
+
+              if (m.voice) {
+                await bot.sendVoice(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+              } else if (m.audio) {
+                await bot.sendAudio(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+              } else if (m.photo) {
+                await bot.sendPhoto(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+              } else if (m.video) {
+                await bot.sendVideo(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+              } else if (m.document) {
+                await bot.sendDocument(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' }, { filename: customFilename || 'document.pdf' });
+              } else {
+                await bot.sendDocument(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+              }
+            } else if (cleanText) {
+              await bot.sendMessage(cleanDest, cleanText, { parse_mode: 'HTML' });
+            }
+            count++;
+          } catch (err) {
+            console.error('Clone send error:', err.message);
+          }
+          await new Promise(r => setTimeout(r, 600));
+        }
+
+        bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${count} posts</b> deliver ho gaye (${modeBadge})!`, { parse_mode: 'HTML' });
+        return;
+      }
+    } catch (e) {
+      console.error('Userbot clone error:', e.message);
+    }
+  }
+
+  // Fallback to Public Scraper
+  const posts = await scrapePublicChannel(u.source);
+  if (posts.length === 0) {
+    bot.sendMessage(chatId, `⚠️ <b>Source Channel (${u.source}) se posts nahi mil paaye!</b>`, { parse_mode: 'HTML' });
+  } else {
+    let clonedCount = 0;
+    const targetPosts = posts.length > limit ? posts.slice(-limit) : posts;
+    for (const p of targetPosts) {
+      if (isAlreadySent(u.source, p.id, cleanDest)) continue;
+      let cleanText = p.text;
+      if (!isDirect) {
+        cleanText = cleanAndBrandText(p.text, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
+        if (!cleanText && !p.photo && !p.video) continue;
+      }
+      try {
+        if (p.photo) {
+          await bot.sendPhoto(cleanDest, p.photo, { caption: cleanText, parse_mode: 'HTML' });
+        } else if (p.video) {
+          await bot.sendVideo(cleanDest, p.video, { caption: cleanText, parse_mode: 'HTML' });
+        } else if (cleanText) {
+          await bot.sendMessage(cleanDest, cleanText, { parse_mode: 'HTML' });
+        }
+        clonedCount++;
+      } catch (e) {}
+      await new Promise(r => setTimeout(r, 600));
+    }
+    bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${clonedCount} posts</b> deliver ho gaye!`, { parse_mode: 'HTML' });
+  }
 }
 
 // 8. Bot Command & Callback Handlers
@@ -925,103 +1167,64 @@ Private Channels aur 1-Click lists ke liye apna number bhejein:
       `.trim(), { parse_mode: 'HTML' });
       break;
 
-    case 'clone_now':
+    case 'tog_clone_mode':
+      u.cloneMode = u.cloneMode === 'DIRECT' ? 'FILTERED' : 'DIRECT';
+      saveDb();
+      bot.answerCallbackQuery(query.id, {
+        text: u.cloneMode === 'DIRECT' ? '⚡ DIRECT COPY MODE ON: Exact 1-to-1 mirror copy (no edits)!' : '🛡️ FILTERED MODE ON: Smart Ad & Betting Stripper Active!',
+        show_alert: true
+      });
+      const mMode = getMainMenu(userId);
+      bot.editMessageText(mMode.text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', reply_markup: mMode.keyboard });
+      break;
+
+    case 'clone_menu':
       if (u.source === 'Not Set' || u.destination === 'Not Set') {
         bot.sendMessage(chatId, '⚠️ <b>Pehle Source aur Destination channel set karein!</b>', { parse_mode: 'HTML' });
         return;
       }
-      bot.sendMessage(chatId, `🚀 <b>Cloning Shuru! Pichli 10 posts deliver ki ja rahi hain...</b>`, { parse_mode: 'HTML' });
+      const cModeLabel = u.cloneMode === 'DIRECT' ? '⚡ DIRECT COPY (Exact Mirror)' : '🛡️ FILTERED (Strip Ads)';
+      bot.sendMessage(chatId, `
+📦 <b>CHANNEL CLONER (ONE-CLICK POST COPIER):</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Puraane aur naye saare posts, photos, videos aur voice notes direct copy honge!
 
-      const userClient = await getUserClient(userId);
-      if (userClient) {
-        try {
-          const entity = await resolveChannelEntity(userClient, u.source);
-          if (entity) {
-            const messages = await userClient.getMessages(entity, { limit: 10 });
-            let count = 0;
-            const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
+🎯 <b>Current Mode:</b> <b>${cModeLabel}</b>
+📥 <b>Source:</b> <code>${u.source}</code>
+📤 <b>Destination:</b> <code>${u.destination}</code>
 
-            for (const m of messages.reverse()) {
-              if (!m.message && !m.media) continue;
-
-              // 🛡️ Deduplication check
-              if (isAlreadySent(u.source, m.id, cleanDest)) continue;
-
-              const postText = m.message || '';
-              const docName = (m.file && m.file.name) ? m.file.name : '';
-
-              if (u.filterType === 'PDF_ONLY') {
-                const isPdf = m.document && (m.document.mimeType === 'application/pdf' || docName.toLowerCase().endsWith('.pdf'));
-                if (!isPdf) continue;
-              } else if (u.filterType === 'VIDEO_ONLY') {
-                if (!m.video) continue;
-              }
-
-              const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
-              if (!cleanText && !m.media) continue;
-
-              try {
-                if (m.media) {
-                  const buffer = await userClient.downloadMedia(m.media);
-                  let customFilename = docName;
-                  if (u.pdfPrefix && docName) {
-                    customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
-                  }
-
-                  if (m.document) {
-                    await bot.sendDocument(cleanDest, buffer, { caption: cleanText }, { filename: customFilename || 'document.pdf' });
-                  } else if (m.photo) {
-                    await bot.sendPhoto(cleanDest, buffer, { caption: cleanText });
-                  } else if (m.video) {
-                    await bot.sendVideo(cleanDest, buffer, { caption: cleanText });
-                  } else {
-                    await bot.sendDocument(cleanDest, buffer, { caption: cleanText });
-                  }
-                } else if (cleanText) {
-                  await bot.sendMessage(cleanDest, cleanText);
-                }
-                count++;
-              } catch (err) {
-                console.error('Clone send error:', err.message);
-              }
-              await new Promise(r => setTimeout(r, 800));
-            }
-
-            bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${count} posts</b> deliver ho gaye (Zero Duplicates)!`, { parse_mode: 'HTML' });
-            return;
-          }
-        } catch (e) {
-          console.error('Userbot clone error:', e.message);
+👇 <b>Kitne posts clone karne hain chunein:</b>
+      `.trim(), {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '📦 Clone Last 10 Posts', callback_data: 'clone_10' },
+              { text: '📦 Clone Last 30 Posts', callback_data: 'clone_30' }
+            ],
+            [
+              { text: '📦 Clone Last 50 Posts', callback_data: 'clone_50' },
+              { text: u.cloneMode === 'DIRECT' ? '🛡️ Switch to Filtered' : '⚡ Switch to Direct Copy', callback_data: 'tog_clone_mode' }
+            ],
+            [
+              { text: '🔙 Back to Menu', callback_data: 'refresh' }
+            ]
+          ]
         }
-      }
+      });
+      break;
 
-      // Public Scraper Fallback
-      const posts = await scrapePublicChannel(u.source);
-      if (posts.length === 0) {
-        bot.sendMessage(chatId, `⚠️ <b>Source Channel (${u.source}) se posts nahi mil paaye!</b>`, { parse_mode: 'HTML' });
-      } else {
-        let clonedCount = 0;
-        const targetPosts = posts.length > 10 ? posts.slice(-10) : posts;
-        for (const p of targetPosts) {
-          if (isAlreadySent(u.source, p.id, u.destination)) continue;
-          const cleanText = cleanAndBrandText(p.text, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
-          if (!cleanText && !p.photo && !p.video) continue;
+    case 'clone_10':
+    case 'clone_now':
+      await executeChannelClone(userId, chatId, 10);
+      break;
 
-          const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
-          try {
-            if (p.photo) {
-              await bot.sendPhoto(cleanDest, p.photo, { caption: cleanText });
-            } else if (p.video) {
-              await bot.sendVideo(cleanDest, p.video, { caption: cleanText });
-            } else if (cleanText) {
-              await bot.sendMessage(cleanDest, cleanText);
-            }
-            clonedCount++;
-          } catch (e) {}
-          await new Promise(r => setTimeout(r, 800));
-        }
-        bot.sendMessage(chatId, `🎉 <b>CLONING COMPLETE!</b> Total <b>${clonedCount} posts</b> deliver ho gaye!`, { parse_mode: 'HTML' });
-      }
+    case 'clone_30':
+      await executeChannelClone(userId, chatId, 30);
+      break;
+
+    case 'clone_50':
+      await executeChannelClone(userId, chatId, 50);
       break;
 
     case 'bulk_pdf':
@@ -1464,7 +1667,7 @@ Aapke <b>Telegram App</b> me 5-digit ka official Login Code aaya hoga.
   }
 });
 
-// ⚡ 10. GRACEFUL FAIL-SAFE POLLER (10 SECONDS - 100% ZERO DUPLICATES)
+// ⚡ 10. ULTRA-FAST FAIL-SAFE POLLER (4 SECONDS - 100% ZERO DUPLICATES)
 setInterval(async () => {
   for (const uid of Object.keys(db)) {
     const u = db[uid];
@@ -1472,8 +1675,9 @@ setInterval(async () => {
       if (isProcessingPoller[uid]) continue; // 🛡️ Prevent overlapping poller cycles
       isProcessingPoller[uid] = true;
       try {
-        const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
+        const cleanDest = u.destinationId || (u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`));
         const userClient = await getUserClient(uid);
+        const isDirect = (u.cloneMode === 'DIRECT');
 
         // Private Channel Poller
         if (userClient) {
@@ -1507,11 +1711,18 @@ setInterval(async () => {
                     if (!nm.video) { u.lastPostId = nm.id; saveDb(); continue; }
                   }
 
-                  const cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
-                  if (!cleanText && !nm.media) {
-                    u.lastPostId = nm.id;
-                    saveDb();
-                    continue;
+                  let cleanText = postText;
+                  if (!isDirect) {
+                    cleanText = cleanAndBrandText(postText, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
+                    if (!cleanText && !nm.media) {
+                      u.lastPostId = nm.id;
+                      saveDb();
+                      continue;
+                    }
+                  } else {
+                    if (u.replaceRules && cleanText) {
+                      cleanText = cleanAndBrandText(postText, false, '', u.replaceRules, '', '', '');
+                    }
                   }
 
                   if (nm.media) {
@@ -1521,17 +1732,21 @@ setInterval(async () => {
                       customFilename = `${u.pdfPrefix.trim()} ${docName}`.trim();
                     }
 
-                    if (nm.document) {
-                      await bot.sendDocument(cleanDest, buffer, { caption: cleanText }, { filename: customFilename || 'document.pdf' });
+                    if (nm.voice) {
+                      await bot.sendVoice(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+                    } else if (nm.audio) {
+                      await bot.sendAudio(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
                     } else if (nm.photo) {
-                      await bot.sendPhoto(cleanDest, buffer, { caption: cleanText });
+                      await bot.sendPhoto(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
                     } else if (nm.video) {
-                      await bot.sendVideo(cleanDest, buffer, { caption: cleanText });
+                      await bot.sendVideo(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
+                    } else if (nm.document) {
+                      await bot.sendDocument(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' }, { filename: customFilename || 'document.pdf' });
                     } else {
-                      await bot.sendDocument(cleanDest, buffer, { caption: cleanText });
+                      await bot.sendDocument(cleanDest, buffer, { caption: cleanText, parse_mode: 'HTML' });
                     }
                   } else if (cleanText) {
-                    await bot.sendMessage(cleanDest, cleanText);
+                    await bot.sendMessage(cleanDest, cleanText, { parse_mode: 'HTML' });
                   }
 
                   console.log(`🚀 [POLLER DELIVERED]: Post ${nm.id} to ${cleanDest}`);
@@ -1561,20 +1776,22 @@ setInterval(async () => {
               continue;
             }
 
-            const cleanText = cleanAndBrandText(np.text, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
-            if (!cleanText && !np.photo && !np.video) {
-              u.lastPostId = np.id;
-              saveDb();
-              continue;
+            let cleanText = np.text;
+            if (!isDirect) {
+              cleanText = cleanAndBrandText(np.text, u.removeLinks, u.footer, u.replaceRules, u.blocklist, u.header, u.keyword);
+              if (!cleanText && !np.photo && !np.video) {
+                u.lastPostId = np.id;
+                saveDb();
+                continue;
+              }
             }
 
-            const cleanDest = u.destination.startsWith('@') ? u.destination : (u.destination.startsWith('-100') ? u.destination : `@${u.destination}`);
             if (np.photo) {
-              await bot.sendPhoto(cleanDest, np.photo, { caption: cleanText });
+              await bot.sendPhoto(cleanDest, np.photo, { caption: cleanText, parse_mode: 'HTML' });
             } else if (np.video) {
-              await bot.sendVideo(cleanDest, np.video, { caption: cleanText });
+              await bot.sendVideo(cleanDest, np.video, { caption: cleanText, parse_mode: 'HTML' });
             } else if (cleanText) {
-              await bot.sendMessage(cleanDest, cleanText);
+              await bot.sendMessage(cleanDest, cleanText, { parse_mode: 'HTML' });
             }
             console.log(`🚀 [PUBLIC POLLER DELIVERED]: Post ${np.id} to ${u.destination}`);
             u.lastPostId = np.id;
@@ -1587,4 +1804,4 @@ setInterval(async () => {
       }
     }
   }
-}, 10000); // 10s graceful fail-safe poller (Never duplicates!)
+}, 4000); // 4s graceful fail-safe poller (Never duplicates!)
