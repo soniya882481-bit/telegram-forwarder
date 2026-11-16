@@ -1,24 +1,42 @@
 ﻿{
   "1336809281": {
     "filterType": "ALL",
-    "lastPostId": 438,
+    "lastPostId": 0,
     "isActive": true,
-    "destination": "@kunal_bhai_no12",
+    "destination": "-1003719518645",
+    "header": "",
     "footer": "",
-    "source": "@tread_crafted",
+    "source": "https://t.me/+CAMHe5DY_EAzZGU9",
     "keyword": "",
-    "blocklist": "",
-    "replaceRules": "",
+    "blocklist": "batting, betting, 1xbet, bonus, deposit, signup, id link, registration, bonus link",
+    "replaceRules": "rolex sir => akshitaxcricz\nROLEX SIR => akshitaxcricz",
     "pdfPrefix": "",
     "removeLinks": true,
     "isUserbotConnected": false,
-    "sessionString": ""
+    "sessionString": "",
+    "routes": [
+      {
+        "id": "rule_1",
+        "name": "ROLEX SIR to AKSHITA TIPS",
+        "source": "-1002946798285",
+        "destination": "-1003719518645",
+        "filterType": "ALL",
+        "keyword": "",
+        "blocklist": "batting, betting, 1xbet, bonus, deposit, signup, id link, registration, bonus link",
+        "replaceRules": "rolex sir => akshitaxcricz\nROLEX SIR => akshitaxcricz",
+        "removeLinks": true,
+        "header": "",
+        "footer": "",
+        "isActive": true
+      }
+    ]
   },
   "7166970433": {
     "filterType": "ALL",
     "lastPostId": 0,
     "isActive": true,
     "destination": "@ICT_SMC_PDF",
+    "header": "",
     "footer": "Join our official channel: https://t.me/ICT_SMC_PDF",
     "source": "@simpleforextools",
     "keyword": "",
