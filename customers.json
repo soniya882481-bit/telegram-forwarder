@@ -4,22 +4,22 @@
     "lastPostId": 0,
     "isActive": true,
     "cloneMode": "DIRECT",
-    "source": "https://t.me/+CAMHe5DY_EAzZGU9",
+    "source": "-1002946798285",
     "sourceId": "2946798285",
     "destination": "-1003719518645",
     "destinationId": "-1003719518645",
     "header": "",
     "footer": "",
     "keyword": "",
-    "blocklist": "batting, betting, 1xbet, bonus, deposit, signup, id link, registration, bonus link",
+    "blocklist": "batting, betting, 1xbet, bonus, deposit, signup, id link, registration, bonus link, creditplay",
     "replaceRules": "rolex sir => akshitaxcricz\nROLEX SIR => akshitaxcricz",
     "pdfPrefix": "",
     "removeLinks": true,
-    "isUserbotConnected": true,
+    "isUserbotConnected": false,
     "sessionString": "",
     "routes": [
       {
-        "id": "rule_1",
+        "id": "rule_primary",
         "name": "ROLEX SIR to AKSHITA TIPS",
         "source": "-1002946798285",
         "sourceId": "2946798285",
@@ -28,11 +28,12 @@
         "filterType": "ALL",
         "cloneMode": "DIRECT",
         "keyword": "",
-        "blocklist": "batting, betting, 1xbet, bonus, deposit, signup, id link, registration, bonus link",
+        "blocklist": "batting, betting, 1xbet, bonus, deposit, signup, id link, registration, bonus link, creditplay",
         "replaceRules": "rolex sir => akshitaxcricz\nROLEX SIR => akshitaxcricz",
         "removeLinks": true,
         "header": "",
         "footer": "",
+        "lastPostId": 0,
         "isActive": true
       }
     ]
@@ -43,15 +44,18 @@
     "isActive": true,
     "cloneMode": "FILTERED",
     "destination": "@ICT_SMC_PDF",
+    "destinationId": "",
     "header": "",
     "footer": "Join our official channel: https://t.me/ICT_SMC_PDF",
     "source": "@simpleforextools",
+    "sourceId": "",
     "keyword": "",
     "blocklist": "",
     "replaceRules": "",
     "pdfPrefix": "",
     "removeLinks": true,
     "isUserbotConnected": false,
-    "sessionString": ""
+    "sessionString": "",
+    "routes": []
   }
 }
